@@ -1,4 +1,9 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/mcp.schema.json",
-  "mcpServers": {}
+  "mcpServers": {
+    "import-to-capy": {
+      "type": "streamable-http",
+      "url": "https://import-to-capy-mcp.vercel.app/mcp"
+    }
+  }
 }

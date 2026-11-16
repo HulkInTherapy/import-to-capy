@@ -43,7 +43,7 @@ test('converter --from-app: scripts, prompts and env var NAMES from the app; val
   const { t, root } = world();
   const db = buildDb(t, root);
   const before = hash(db);
-  const tmpBefore = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('conductor-db-')).length;
+  const tmpBefore = fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith(`conductor-db-${process.pid}-`)).length;
   const rows = readAppRows(db);
   assert.equal(rows.length, 1);
   assert.ok(!JSON.stringify(rows).includes('SECRET'), 'env values are never selected');
@@ -56,7 +56,7 @@ test('converter --from-app: scripts, prompts and env var NAMES from the app; val
   assert.match(md, /## Reviews\n\nFlag raw SQL\./);
   assert.ok(!md.includes('SECRET'));
   assert.equal(hash(db), before, 'the source database is untouched');
-  assert.equal(fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith('conductor-db-')).length, tmpBefore, 'temporary copy removed');
+  assert.equal(fs.readdirSync(os.tmpdir()).filter((f) => f.startsWith(`conductor-db-${process.pid}-`)).length, tmpBefore, 'temporary copy removed');
 });
 
 test('workspaces from the app: latest session metadata by default, message text only on request', { skip }, () => {

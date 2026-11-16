@@ -1,6 +1,6 @@
 {
   "name": "import-to-capy",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "Capy plugin, skill and CLI: bring Conductor workspaces and T3 Code threads into Capy as real threads with their history. Read-only on the source.",
   "type": "module",

@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 // import-to-capy: bring Conductor workspaces and T3 Code threads into Capy as real threads. Read-only on the source.
 //
-//   import-to-capy detect [--json]
+//   import-to-capy ready     [--json]                                         which apps are here, this computer's name
 //   import-to-capy questions --source conductor|t3code [--project <name>]   choices for Capy's question card (JSON)
-//   import-to-capy scan      --source ... [--json]                          numbered menu of projects
 //   import-to-capy select    --source ... "<answer>" [--json]               resolve an answer ("latest 3 threads"), print the preview
-//   import-to-capy native    --source ... (--threads a,b | --answer "...") [--open] [--json]   steps for Capy's own import
-//   import-to-capy continue  --source ... --threads a,b --consent [--project <name|home>] [--dry-run]   API fallback
+//   import-to-capy prepare   --source ... --threads a,b --consent [--json]  per thread: repo, branch, folder, a continuation prompt,
+//                                                                            redacted handoff + transcript files (for Capy's thread.create)
+//   import-to-capy remember  --key <owner/repo|folder:/path> --project <name>   remember where a repo with no Capy project goes
+//   import-to-capy native    --source ... (--threads a,b | --answer "...") [--open] [--json]   steps for Capy's own Import (optional)
 //   import-to-capy export    --source ... (--threads a,b | --answer "...") --consent [--transcripts]       handoff files only
 //   import-to-capy setup     --source t3code --project <name>               T3 Code project scripts -> .capy/setup.json
-//   import-to-capy pick      --source ... [--no-open]                       terminal users: a local picker page
-//
+//   import-to-capy detect | scan | pick                                      which apps are here; numbered menu; a local picker page
+//   Advanced (automation, needs a Capy API key; not used by the plugin's default flow):
+//   import-to-capy login [--wait] | plan | import --source ... --threads a,b --consent [--project <name> --remember]
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -20,7 +22,10 @@ import { t3Catalog, t3Messages, t3Setup, conductorCatalog, conductorMessages, de
 import { buildHandoff, buildTranscript, continuePrompt, slug, outputDir } from './handoff.mjs';
 import { startPicker } from './picker.mjs';
 import { nativePlan, formatNativeSteps, openImport, IMPORT_DEEP_LINK } from './capy-native.mjs';
-import { apiKey, client, continueThread, deviceIdFor, ImportStop, SAVE_KEY_HELP } from './capy-api.mjs';
+import { apiKey, client, continueThread, deviceIdFor, ImportStop, SAVE_KEY_HELP, planImport, loadChoices, rememberChoice } from './capy-api.mjs';
+import { startLogin, startLoginInBackground, saveKey } from './login.mjs';
+import { gitRepos } from './capy-native.mjs';
+import { execFileSync } from 'node:child_process';
 
 export const SOURCES = { conductor: 'Conductor', t3code: 'T3 Code' };
 
@@ -66,6 +71,49 @@ export function summary(res) {
   return L.join('\n');
 }
 
+const git = (dir, ...args) => { try { return execFileSync('git', ['-C', dir, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 }).trim(); } catch { return null; } };
+export function computerName() {
+  if (process.platform === 'darwin') { try { return execFileSync('scutil', ['--get', 'ComputerName'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* fall through */ } }
+  return os.hostname();
+}
+
+// The default path: everything Capy's own agent needs to create each thread with its built-in thread.create tool.
+// Writes a redacted handoff and the full redacted transcript per thread under ~/.capy-import/<source>/ (outside every
+// repository, readable by the new thread on this same computer) and returns a short continuation prompt for each.
+export function prepareThreads(source, cat, threadIds, { home = os.homedir(), db, out } = {}) {
+  const dir = outputDir(out || path.join(home, '.capy-import', slug(cat.source)));
+  const remembered = loadChoices(home);
+  const threads = [];
+  let redacted = 0;
+  for (const p of cat.projects) {
+    for (const t of p.threads.filter((x) => threadIds.includes(x.id))) {
+      const meta = { ...t, source: cat.source, projectName: p.name, projectPath: p.path };
+      const msgs = source === 't3code' ? t3Messages(t.id, { db: db || t3DefaultDb(home) }) : conductorMessages(t, { db: db || conductorDefaultDb(home) });
+      const h = buildHandoff(meta, msgs);
+      const tr = buildTranscript(meta, msgs);
+      const base = `${slug(p.name)}--${slug(t.title)}-${String(t.id).slice(0, 6)}`;
+      const handoffPath = path.join(dir, `${base}.handoff.md`);
+      const transcriptPath = path.join(dir, `${base}.transcript.md`);
+      fs.writeFileSync(handoffPath, h.markdown, { mode: 0o600 });
+      fs.writeFileSync(transcriptPath, tr.markdown, { mode: 0o600 });
+      redacted += h.redacted + tr.redacted;
+      const worktree = [t.worktree, t.path].find((d) => d && fs.existsSync(d)) || '';
+      const repo = worktree ? gitRepos(worktree)[0] || '' : '';
+      const branch = t.branch || (worktree && git(worktree, 'rev-parse', '--abbrev-ref', 'HEAD')) || '';
+      const uncommitted = worktree ? (git(worktree, 'status', '--porcelain') || '').split('\n').filter(Boolean).length : 0;
+      const branchOnOrigin = !!(worktree && branch && branch !== 'HEAD' && git(worktree, 'rev-parse', '--verify', '--quiet', `refs/remotes/origin/${branch}`));
+      const key = repo || `folder:${p.path}`;
+      const prompt = [`Continuing "${t.title}", imported from ${cat.source}${branch && branch !== 'HEAD' ? ` (branch \`${branch}\`)` : ''}.`,
+        worktree ? `The original work is on this computer in ${worktree}${uncommitted ? ` with ${uncommitted} uncommitted file(s) (\`git -C ${worktree} status\`)` : ''}; leave that folder as it is.` : '',
+        `Read the handoff at ${handoffPath}, and the full redacted transcript at ${transcriptPath} where you need detail.`,
+        'Then tell me in a few lines where it stands and wait for my go-ahead before changing code.'].filter(Boolean).join(' ');
+      threads.push({ id: t.id, title: t.title, from: p.name, fromFolder: p.path, repo, key, rememberedProject: remembered[key.toLowerCase()] || remembered[key] || null,
+        branch: branch === 'HEAD' ? '' : branch, branchOnOrigin, worktree, uncommitted, handoffPath, transcriptPath, prompt, redacted: h.redacted + tr.redacted });
+    }
+  }
+  return { source: cat.source, computerName: computerName(), dir, threads, redacted };
+}
+
 // Plain-language phrase for the selection parser from the question-card answers.
 export const SCOPES = ['Latest 3 threads (recommended)', 'Last 7 days', 'Last used project', 'Everything', 'Let me pick threads'];
 export function answerPhrase({ project, scope } = {}) {
@@ -82,6 +130,14 @@ export function questions(cat, { project } = {}) {
   const out = { source: cat.source,
     project: { question: `Which ${cat.source} project?`, options: [...top.map(label), 'All projects'], values: [...top.map((p) => p.name), 'All projects'] },
     threads: { question: 'Which threads?', options: SCOPES } };
+  // One card that answers project and threads together, so most imports need only this card and the confirm.
+  const plural = (n) => `${n} thread${n === 1 ? '' : 's'}`;
+  out.what = { question: `What should I bring over from ${cat.source}?`,
+    options: [...top.slice(0, 3).map((x, k) => `${x.name}: latest ${plural(Math.min(3, live(x).length))}${k === 0 ? ' (recommended)' : ''}`), 'Everything from the last 7 days', 'Let me pick threads'],
+    values: [...top.slice(0, 3).map((x) => `project ${x.name} latest 3 threads`), 'last 7 days', 'pick'] };
+  const when = (d) => Date.parse(String(d || '').replace(' ', 'T')) || 0;
+  const latest = cat.projects.flatMap((x) => live(x).map((t) => ({ x, t }))).sort((a, b) => when(b.t.updatedAt) - when(a.t.updatedAt)).slice(0, 12);
+  out.pickAny = { question: 'Which threads? (pick any)', multiple: true, options: latest.map(({ x, t }) => `${x.name} / ${t.title} · ${fmtDay(t.updatedAt)}`), values: latest.map(({ t }) => t.id) };
   const p = project && cat.projects.find((x) => x.name === project || x.id === project);
   if (p) out.pick = { question: `Which ${p.name} threads? (pick any)`, multiple: true, options: live(p).slice(0, 10).map((t) => `${t.title} · ${fmtDay(t.updatedAt)}${t.native ? '' : ' · no session file'}`), values: live(p).slice(0, 10).map((t) => t.id) };
   return out;
@@ -103,9 +159,39 @@ export async function main(argv, io = { log: console.log, err: console.error }, 
   const cmd = o._[0];
   const source = o.source === 't3' ? 't3code' : o.source;
   const opts = { db: o.db, home: o.home };
-  if (!cmd || cmd === 'help' || o.help) { io.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 13).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')); return 0; }
+  if (!cmd || cmd === 'help' || o.help) { io.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1).filter((l, k, a) => a.slice(0, k + 1).every((x) => x.startsWith('//'))).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')); return 0; }
   if (cmd === 'detect') { const d = detect({ home: o.home }); io.log(o.json ? JSON.stringify(d) : d.length ? `Found: ${d.map((s) => SOURCES[s]).join(', ')}` : 'Found neither Conductor nor T3 Code data on this computer.'); return 0; }
   if (cmd === 'open') { io.log(openImport(deps.run ? { run: deps.run } : {}) ? `Opened ${IMPORT_DEEP_LINK}` : `Open Capy → Settings → Import (${IMPORT_DEEP_LINK})`); return 0; }
+  const home = o.home || os.homedir();
+  const keyWorks = async (key) => { try { await (deps.api || client(key)).projects(); return true; } catch (e) { return e instanceof ImportStop && (e.code === 401 || e.code === 403) ? false : null; } };
+  if (cmd === 'ready') {
+    const r = { sources: detect({ home: o.home }), computerName: computerName(), onThisMac: !!(o.device || deviceIdFor({ home })) };
+    r.next = r.sources.length ? 'Ready.' : 'Not on the computer with Conductor or T3 Code: start a thread on This Mac.';
+    io.log(o.json ? JSON.stringify(r) : `${r.sources.length ? `Found: ${r.sources.map((s) => SOURCES[s]).join(', ')}` : 'Found neither Conductor nor T3 Code here.'} This computer: ${r.computerName}.`);
+    return 0;
+  }
+  if (cmd === 'remember') {
+    if (!o.key || !o.project || o.key === true || o.project === true) { io.err('Pass --key <owner/repo or folder:/path> --project <Capy project name or id>.'); return 2; }
+    rememberChoice(home, [String(o.key)], String(o.project));
+    io.log(`Remembered: ${o.key} → ${o.project}.`);
+    return 0;
+  }
+  if (cmd === 'login') {
+    const verify = async (k) => (await keyWorks(k)) === true;
+    const start = deps.startLogin || startLogin;
+    if (o.serve || o.wait) {
+      const lg = await start({ verify, save: (k) => saveKey(k), open: !o['no-open'] });
+      if (o.serve) io.log(lg.url); else io.err(`Paste your Capy API key at ${lg.url} (Capy → Settings → API opened too).`);
+      const ok = await lg.result;
+      if (!o.serve) io.log(ok ? 'Saved your Capy API key in the Keychain. Imports use it from now on.' : 'Timed out; run login again.');
+      return ok ? 0 : 3;
+    }
+    const existing = 'key' in deps ? deps.key : apiKey();
+    if (existing && !o.force && (await keyWorks(existing)) === true) { io.log('Already connected: your Capy API key is in the Keychain.'); return 0; }
+    const url = await (deps.startLoginInBackground || startLoginInBackground)();
+    io.log(`Opened Capy → Settings → API and a page on this Mac where you paste the key once (${url}). It goes into your Keychain, nowhere else. When it says Connected, run: import-to-capy ready --json`);
+    return 0;
+  }
   if (!SOURCES[source]) { io.err('Pass --source conductor or --source t3code.'); return 2; }
   const cat = loadCatalog(source, opts);
   if (cmd === 'scan') {
@@ -154,7 +240,23 @@ export async function main(argv, io = { log: console.log, err: console.error }, 
       + (o.open && !opened && plan.groups.length ? `\n(Couldn't open ${IMPORT_DEEP_LINK} here; open Capy → Settings → Import yourself.)` : ''));
     return 0;
   }
-  if (cmd === 'continue') {
+  if (cmd === 'prepare') {
+    const ids = idsFrom(); if (!ids) return 2;
+    if (!o.consent) { io.err('Reading chats needs the user\'s consent. Ask once, then pass --consent.'); return 2; }
+    const res = prepareThreads(source, cat, ids, { home, db: o.db, out: o.out });
+    io.log(o.json ? JSON.stringify(res, null, 2) : res.threads.map((t) => `- ${t.from} / "${t.title}" (${t.repo || 'no remote'}${t.branch ? `, ${t.branch}` : ''}): ${t.transcriptPath}`).join('\n'));
+    return 0;
+  }
+  if (cmd === 'plan') {
+    const ids = idsFrom(); if (!ids) return 2;
+    const key = deps.api ? 'injected' : 'key' in deps ? deps.key : apiKey();
+    if (!key) { io.err(SAVE_KEY_HELP); return 4; }
+    const plan = planImport(cat, ids, await (deps.api || client(key)).projects(), { remembered: loadChoices(home), deviceId: o.device || deviceIdFor({ home }) });
+    io.log(o.json ? JSON.stringify(plan, null, 2) : [...plan.threads.map((t) => `- ${t.from} / "${t.title}" → ${t.capyProject || `no Capy project for ${t.repo || 'its repository'}`}`),
+      ...plan.missing.map((m) => `No Capy project uses ${m.repo} (${m.threads.length} thread(s)). Pick one of: ${plan.capyProjects.join(', ')}; or create it at ${plan.createProjectUrl}.`)].join('\n'));
+    return 0;
+  }
+  if (cmd === 'continue' || cmd === 'import') {
     const ids = idsFrom(); if (!ids) return 2;
     if (!o.consent) { io.err('Reading chats needs the user\'s consent. Ask once, then pass --consent.'); return 2; }
     const key = deps.api ? 'injected' : 'key' in deps ? deps.key : apiKey();
@@ -167,7 +269,8 @@ export async function main(argv, io = { log: console.log, err: console.error }, 
       const meta = { ...t, source: cat.source, projectName: p.name, projectPath: p.path };
       const msgs = source === 't3code' ? t3Messages(t.id, { db: o.db || t3DefaultDb(o.home) }) : conductorMessages(t, { db: o.db || conductorDefaultDb(o.home) });
       try {
-        const r = await continueThread(api, { thread: meta, source: cat.source, handoff: buildHandoff(meta, msgs), transcript: buildTranscript(meta, msgs), projects, project: o.project, deviceId, workspace: o.workspace });
+        const r = await continueThread(api, { thread: meta, source: cat.source, handoff: buildHandoff(meta, msgs), transcript: buildTranscript(meta, msgs), projects, project: o.project, remembered: loadChoices(home), deviceId, workspace: o.workspace });
+        if (o.remember && o.project && !o['dry-run']) rememberChoice(home, r.repos, r.projectId);
         results.push({ thread: t.title, ...r });
       } catch (e) {
         if (!(e instanceof ImportStop)) throw e;
@@ -176,7 +279,8 @@ export async function main(argv, io = { log: console.log, err: console.error }, 
       }
     }
     io.log(o.json ? JSON.stringify(results, null, 2) : results.map((r) => (r.stopped ? `- "${r.thread}": not imported. ${r.stopped}`
-      : `- "${r.thread}" → ${r.projectName}${r.onDevice ? `, on this computer in ${r.worktree}` : ''} (thread ${r.threadId}; ${r.redacted} secret(s) redacted)`)).join('\n'));
+      : `- "${r.thread}" → ${r.projectName}${r.onDevice ? `, on this computer in ${r.worktree}` : ''} (thread ${r.threadId}; ${r.redacted} secret(s) redacted)`)).join('\n')
+      + (results.some((r) => r.threadId) ? '\nThey are in Capy now, under their projects (capy.ai/threads).' : ''));
     return results.some((r) => r.stopped) ? 5 : 0;
   }
   if (cmd === 'export') {

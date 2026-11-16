@@ -1,42 +1,30 @@
 # Import to Capy
 
-Bring your **Conductor** workspaces and **T3 Code** threads into Capy as **real threads with their whole conversation**, in the Capy project for their repository, ready to continue. Type `$import` in a thread on your Mac. It only reads Conductor and T3 Code; both keep working.
+Bring your **Conductor** workspaces and **T3 Code** threads into Capy as threads in the right project, with their titles, branches and whole conversation, ready to continue. Say "import from conductor" in a thread on your Mac. It only reads Conductor and T3 Code; both keep working.
 
 *Made by Meghavi, a Capy user. Not affiliated with Capy, Conductor or T3 Code.*
 
 ## How it works
 
-Capy's desktop app already imports local **Claude Code** and **Codex** sessions as real threads (Settings → Import). Conductor and T3 Code run Claude Code and Codex underneath, so every Conductor workspace and T3 Code thread already has a session file on your Mac. Capy's import lists those files by folder and first prompt, though, not by your workspace names, so finding the right ones is guesswork.
+Say "import from conductor" (or "import from t3 code") in a Capy thread on your Mac. Capy's agent gets this plugin's playbook from its small remote server (remote servers reach threads on your own computer; plugin skills don't), runs the importer on your Mac with `npx` (nothing to install), and asks at most two things: what to bring, and a final yes. Then it creates each thread itself with Capy's own `thread.create` tool:
 
-This plugin does the part Capy doesn't: it asks which project and which threads you want (by their real names), finds the exact session file behind each one, opens Capy's Import page and tells you exactly which sessions to tick and which project they go to. Capy does the import itself, so you get the real history, not a summary.
+- **in the right project:** the Capy project whose repository matches the workspace's git remote (if none does, it asks once and remembers);
+- **with the original title,** on your Mac, on the same branch;
+- **with the conversation:** the importer writes a redacted handoff and the full redacted transcript to `~/.capy-import/`, and the new thread's first message points at them and at the original worktree, where your uncommitted files stay.
 
-Threads with no session file (rare for T3 Code; more common for old Conductor workspaces) can come over through Capy's API instead: a new thread in the right project, on your Mac in the original worktree, with a redacted handoff and the full redacted transcript attached. A short handoff summary is the last resort, and it's labelled as one.
+No API key, no clicks after the yes. If you also want the original message-by-message history, Capy's own Import (Settings → Import → Claude Code / Codex) can bring the session files too; the importer tells you exactly which sessions to tick (3 clicks, optional).
 
 ## What it feels like
 
 *The project and thread names are made up.*
 
-> **You:** `$import` from conductor
+> **You:** import api from conductor
 >
-> **Capy:** *(question card)* Which Conductor project?
-> ○ api · 4 threads · last used 16 Nov  ○ web · 2 threads · last used 13 Nov  ○ All projects
->
-> **You:** api
->
-> **Capy:** *(question card)* Which threads?
-> ○ Latest 3 threads (recommended)  ○ Last 7 days  ○ Last used project  ○ Everything  ○ Let me pick threads
->
-> **You:** Latest 3 threads
->
-> **Capy:** api: "Fix login bug" (me/login, PR #12), "Add rate limits" (me/rate), "Refactor db layer" (me/db). *(card)* Bring these 3 into Capy with their full history?
+> **Capy:** api: "Fix login bug" (me/login), "Add rate limits" (me/rate), "Refactor db layer" (me/db). *(card)* Import these 3 threads into Capy?
 >
 > **You:** Yes, import them
 >
-> **Capy:** I opened Capy's Import page. Click **Claude Code**, open **acme/api** and tick "Login fails for SSO users", "Add a rate limiter to…" and "Split the db module…" (dated 16, 14 and 12 Nov). **Next** → acme/api goes to **api** → **Import**.
->
-> **You:** done
->
-> **Capy:** All 3 are in **api** with their conversations, on their branches. Conductor is untouched.
+> **Capy:** Done. All 3 are in **api** on this Mac, on their branches, each starting from its handoff and full transcript (2 secrets redacted). Conductor is untouched. Want the original message-by-message history too? That's 3 clicks in Capy's Import.
 
 ## Install
 
@@ -46,53 +34,51 @@ Threads with no session file (rare for T3 Code; more common for old Conductor wo
 https://capy.ai/settings/mcp?github=https://github.com/HulkInTherapy/import-to-capy
 ```
 
-**2. Make it reach threads on your Mac.** Capy's docs say plugin skills run in threads on cloud machines; a thread on your own computer gets built-in, repository and Drive skills. Your Conductor and T3 Code data is on your Mac, so also add the skills to your **personal Drive** once. In any thread, say:
+**2. Use it:** new thread → **Machine: This Mac** → "import from conductor" or "import from t3 code" (or `$import` in a cloud thread, where the skills load).
 
-> Install the skills from github.com/HulkInTherapy/import-to-capy/tree/main/skills into my personal drive.
-
-(or Drive → Personal → New skill, one per folder in `skills/`).
-
-**3. Use it:** new thread → **Machine: This Mac** → type `$import` (or `$import-from-conductor`, `$import-from-t3code`), or just say "import from conductor".
+That's all. The plugin's server, `https://import-to-capy-mcp.vercel.app/mcp`, needs no sign-in and stores nothing; it only hands the agent the steps, and everything runs on your Mac.
 
 **Claude Code / Codex:** copy the folders in `skills/` into `~/.claude/skills/` and say "import".
 
 **Terminal** (Node 18+ and `sqlite3`, nothing to install):
 
 ```bash
-npx -y -p github:HulkInTherapy/import-to-capy import-to-capy native --source conductor --answer "latest 3 threads" --open
+npx -y -p github:HulkInTherapy/import-to-capy import-to-capy select --source conductor "latest 3 threads"
 npx -y -p github:HulkInTherapy/import-to-capy import-to-capy native --source t3code --answer "last 7 days" --open
 ```
+
+### Troubleshooting
+
+- **The agent doesn't use the plugin:** open the plugin page in Settings → MCP & plugins and click **Sync** (GitHub plugins update only on Sync), then check that its server shows **Connected**.
+- **Still nothing on a thread on your Mac:** as a fallback you can copy the skills into your personal Drive once ("Install the skills from github.com/HulkInTherapy/import-to-capy/tree/main/skills into my personal drive").
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `detect` | Which of Conductor / T3 Code is on this computer |
-| `questions --source X [--project P]` | The question cards: projects (recent first, with counts and dates), thread choices, a pick list |
-| `select --source X "<words>"` | Resolves "latest 3 threads", "project api last 7 days", "everything"… and prints a one-screen preview |
-| `native --source X --threads … [--open]` | Finds each thread's Claude Code / Codex session file and prints the exact clicks for Capy's Import; `--open` opens `capy://app/settings/import` |
-| `continue --source X --threads … --consent` | API fallback for threads without a session file (key from `CAPY_API_KEY` or the Keychain item `import-to-capy`) |
+| `ready` | Which of Conductor / T3 Code is on this computer, and this computer's name |
+| `questions --source X [--project P]` | The question cards: a single "what" card (recent projects, last 7 days, pick), a pick list |
+| `select --source X "<words>"` | Resolves "c2c-demo", "latest 3 threads", "project api last 7 days", "everything"… and prints a one-screen preview |
+| `prepare --source X --threads … --consent` | Per thread: repo, branch, worktree, uncommitted files, a continuation prompt; writes the redacted handoff and transcript to `~/.capy-import/` |
+| `remember --key <owner/repo> --project <name>` | Remembers where a repository with no Capy project goes |
+| `native --source X --threads … [--open]` | Optional: the exact clicks for Capy's own Import of the original sessions |
 | `export --source X --threads … --consent` | Last resort: redacted handoff summaries plus a "start a summary thread" link |
 | `setup --source t3code --project P` / `conductor-to-capy <repo> --from-app` | Setup scripts → `.capy/setup.json` |
 
-The API key for `continue` never goes in a file or the chat. Save it once in your Keychain:
-
-```bash
-security add-generic-password -U -s import-to-capy -a capy -w     # paste the key from Capy → Settings → API
-```
+**Advanced (automation only, off by default):** `login`, `plan` and `import` create threads through Capy's public API with your own API key (kept in the macOS Keychain, item `import-to-capy`, pasted once into a local page). The plugin's normal flow never uses them.
 
 ## Where it lands
 
-- **Project:** Capy's import puts each session in the project whose repository matches the worktree's GitHub remote. If no project uses that repository yet, the steps tell you to create it first (Settings → Projects & setup), so all its threads land together. Home is never chosen for you.
-- **Branch and history:** the whole conversation, tool calls included, as Capy's import brings it; the branch the workspace is on. Your worktree and its uncommitted files stay where they are.
-- **Fallback threads** start on your Mac in the original worktree (`device` target), so uncommitted work is right there.
+- **Project:** the Capy project whose repository matches the workspace's GitHub remote. If none does, one question: create it (New project → Folder on this Mac or the repository) or pick an existing one; the choice is remembered in `~/.config/import-to-capy/projects.json`. Home is never chosen for you.
+- **Branch and folder:** a new Capy worktree on your Mac from the same branch (or the project's folder). The original Conductor / T3 worktree and its uncommitted files stay where they are; the thread is told where.
+- **History:** a redacted handoff (goal, last state, files touched, to-dos) and the full redacted transcript, which the thread reads from `~/.capy-import/`.
 
 ## What it reads, and what it never does
 
 - **Conductor:** `~/Library/Application Support/com.conductor.app/conductor.db`, through a temporary copy that is deleted.
 - **T3 Code:** `~/.t3/userdata/statev2.sqlite`, opened `immutable=1`: never copied (it can be gigabytes), written or locked. Immutable reads skip the write-ahead log, so the last few minutes may be missing. Subagent runs belong to their parent thread.
 - **Session files:** `~/.claude/projects/**.jsonl` and `~/.codex/sessions/**` headers only: the id, folder, branch, dates and the first prompt line Capy itself shows as the title.
-- Chat text is read only for the fallback, only after you say yes, and is redacted (API keys, tokens, passwords, `.env` values, private keys, credentials in URLs) with a count.
+- Chat text is read only after you say yes, and is redacted (API keys, tokens, passwords, `.env` values, private keys, credentials in URLs) with a count.
 - Never edits Conductor or T3 Code, never commits or pushes without asking, never reads environment variable values.
 
 ## What can't come over
@@ -100,26 +86,23 @@ security add-generic-password -U -s import-to-capy -a capy -w     # paste the ke
 | Thing | Why |
 |---|---|
 | Environment values and secrets | Never read. Re-enter them in Capy ("Import .env" works). |
-| Workspaces whose chats left no session file | Fallback: transcript attached, or a summary. |
+| The message-by-message history inside the new thread | The thread reads the full transcript; Capy's own Import can add the original session as a second thread. |
 | Conductor Cloud organization settings | Stored on Conductor's servers. |
 | Archive scripts, Spotlight testing, run modes | No Capy equivalent. |
 
 ## Develop
 
 ```bash
-npm test           # 63 tests: synthetic Conductor and T3 Code databases from the real schemas, Claude Code and Codex
-                   # session files shaped like real ones, Capy's title rules, project matching, the API fallback
-                   # against a fake api.capy.ai, every selection phrase, redaction, plugin validation
+npm test           # 77 tests: synthetic Conductor and T3 Code databases from the real schemas, session files, Capy's title
+                   # rules, project matching, prepare/remember, redaction, the remote MCP server (handshake, tools,
+                   # errors, no state), plugin validation, and that every playbook copy matches playbook/PLAYBOOK.md
 npm run validate   # plugin.json and mcp.json against Agent Plugins 1.0.0, plus Capy's plugin rules
-npm run sync       # copy lib/ into skills/import/scripts after editing
+npm run sync       # after editing lib/ or playbook/PLAYBOOK.md: copies lib/ into skills/import/scripts and
+                   # rebuilds the three SKILL.md files and server/api/_playbook.js from the one playbook
 ```
 
-The plugin has no MCP server on purpose: a local (stdio) server never reaches threads on your Mac, and it showed as "Not checked" on the plugin page.
+The playbook lives in one file, `playbook/PLAYBOOK.md`; the skills (for cloud threads) and the remote server (for threads on your Mac) are built from it. The server is `server/`, a stateless Vercel function (`cd server && vercel deploy --prod`), Streamable HTTP, no sign-in, no storage, no logging.
 
-## For Capy's team
-
-1. **Let Import show where a session came from.** Conductor and T3 Code sessions are ordinary Claude Code / Codex sessions under `~/conductor/workspaces/…` and `~/.t3/worktrees/…`; naming them "Conductor: <workspace>" / "T3 Code: <thread>" would make Import the migration path for both.
-2. **Plugin skills in threads on your own computer.** Today they reach cloud machines only, so a plugin that works on local data needs a Drive copy.
-3. **A deep link with a preselection,** e.g. `capy://app/settings/import?source=claude-code&sessions=…`, so a skill could hand over exactly the sessions it found.
+A note for Capy's team is in [FOR-CAPY.md](FOR-CAPY.md).
 
 MIT-licensed; take whatever helps.

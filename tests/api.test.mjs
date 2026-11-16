@@ -5,7 +5,8 @@ import path from 'node:path';
 import { hasSqlite, tmpdir, sh } from './helpers.mjs';
 import { fakeHome, SECRETS } from './fakes.mjs';
 import { main } from '../lib/import-to-capy.mjs';
-import { apiKey, client, continueThread, deviceIdFor, resolveProject, ImportStop, KEYCHAIN_SERVICE, API_BASE } from '../lib/capy-api.mjs';
+import { apiKey, client, continueThread, deviceIdFor, resolveProject, ImportStop, KEYCHAIN_SERVICE, API_BASE, loadChoices } from '../lib/capy-api.mjs';
+import { startLogin, saveKey } from '../lib/login.mjs';
 
 const skip = !hasSqlite && 'sqlite3 not installed';
 const quiet = () => { const out = []; return { log: (s) => out.push(s), err: (s) => out.push(s), out }; };
@@ -129,6 +130,111 @@ test('CLI continue: needs consent, explains the Keychain when there is no key, s
   // no key anywhere: one Keychain instruction, nothing sent
   const io3 = quiet();
   assert.equal(await main(['continue', '--source', 'conductor', '--home', home, '--threads', 'w1', '--consent'], io3, { key: null }), 4);
-  assert.match(io3.out[0], /security add-generic-password -U -s import-to-capy/);
+  assert.match(io3.out[0], /import-to-capy login/);
   assert.match(io3.out[0], /Settings → API/);
+});
+
+test('login page: one-time token, localhost only, checks the key with Capy, then saves it once', async () => {
+  const saved = [];
+  const lg = await startLogin({ verify: async (k) => k === 'capy_GOODKEY_0123456789', save: (k) => saved.push(k), open: false });
+  const base = lg.url.replace(/\/\w+$/, '');
+  assert.match(lg.url, /^http:\/\/127\.0\.0\.1:\d+\/[0-9a-f]{48}$/);
+  const page = await fetch(lg.url);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /type="password"/);
+  assert.equal((await fetch(`${base}/wrong`)).status, 404);
+  const send = (key) => fetch(`${lg.url}/key`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ key }) });
+  assert.equal((await send('short')).status, 400);
+  const bad = await send('capy_WRONGKEY_0123456789');
+  assert.equal(bad.status, 400);
+  assert.match(await bad.text(), /did not accept/);
+  assert.equal((await fetch(`${lg.url}/key`, { method: 'POST', headers: { origin: 'https://evil.example' }, body: '{"key":"capy_GOODKEY_0123456789"}' })).status, 403);
+  assert.equal((await send('capy_GOODKEY_0123456789')).status, 200);
+  assert.equal(await lg.result, true);
+  assert.deepEqual(saved, ['capy_GOODKEY_0123456789']);
+});
+
+test('saveKey: the key reaches the Keychain on stdin, never in argv', () => {
+  const calls = [];
+  saveKey('capy_GOODKEY_0123456789', { run: (cmd, args, opts) => calls.push({ cmd, args, input: opts.input }) });
+  assert.equal(calls[0].cmd, 'security');
+  assert.deepEqual(calls[0].args, ['-i']);
+  assert.match(calls[0].input, /^add-generic-password -U -s import-to-capy -a capy -w "capy_GOODKEY_0123456789"\n$/);
+  assert.throws(() => saveKey('bad"key with spaces', { run: () => {} }));
+});
+
+test('CLI ready: which apps are here and this computer\'s name, no key involved', { skip }, async () => {
+  const home = fakeHome({ t3: false });
+  const io = quiet();
+  await main(['ready', '--json', '--home', home], io, {});
+  const r = JSON.parse(io.out[0]);
+  assert.deepEqual(r.sources, ['conductor']);
+  assert.ok(r.computerName);
+  assert.equal(r.next, 'Ready.');
+  assert.equal('key' in r, false);
+});
+
+test('CLI login (advanced API mode): opens the one-time page, skips it when already connected', async () => {
+  const io3 = quiet();
+  assert.equal(await main(['login'], io3, { key: null, startLoginInBackground: async () => 'http://127.0.0.1:1/abc' }), 0);
+  assert.match(io3.out[0], /Settings → API.*http:\/\/127\.0\.0\.1:1\/abc.*Keychain/);
+  const io4 = quiet();
+  await main(['login'], io4, { key: 'K', api: client('K', { fetchImpl: fakeFetch().f }), startLoginInBackground: async () => { throw new Error('should not open'); } });
+  assert.match(io4.out[0], /Already connected/);
+});
+
+test('CLI prepare: per-thread repo, branch, worktree and prompt, redacted files outside the repo; remember fills the project', { skip }, async () => {
+  const home = fakeHome({ t3: false });
+  const wt = worktree(home);
+  const db = path.join(home, 'Library', 'Application Support', 'com.conductor.app', 'conductor.db');
+  sh(path.dirname(db), 'sqlite3', db, `UPDATE workspaces SET workspace_path='${wt}' WHERE id='w1';`);
+  fs.writeFileSync(path.join(wt, 'draft.txt'), 'wip\n');
+  const io = quiet();
+  assert.equal(await main(['prepare', '--source', 'conductor', '--home', home, '--threads', 'w1', '--json'], io, {}), 2, 'needs consent');
+  const io2 = quiet();
+  assert.equal(await main(['prepare', '--source', 'conductor', '--home', home, '--threads', 'w1', '--consent', '--json'], io2, {}), 0);
+  const r = JSON.parse(io2.out[0]);
+  const t = r.threads[0];
+  assert.equal(t.title, 'Billing page');
+  assert.equal(t.repo, 'acme/app');
+  assert.equal(t.worktree, wt);
+  assert.equal(t.uncommitted, 1);
+  assert.equal(t.rememberedProject, null);
+  assert.ok(t.transcriptPath.startsWith(path.join(home, '.capy-import')), 'outside every repository');
+  assert.equal(fs.statSync(t.transcriptPath).mode & 0o777, 0o600);
+  assert.match(t.prompt, /Continuing "Billing page", imported from Conductor/);
+  assert.ok(t.prompt.includes(t.handoffPath) && t.prompt.includes(t.transcriptPath) && t.prompt.includes(wt));
+  assert.match(t.prompt, /wait for my go-ahead/);
+  for (const f of [t.handoffPath, t.transcriptPath]) assert.ok(!fs.readFileSync(f, 'utf8').includes(SECRETS.github), 'redacted');
+  assert.match(fs.readFileSync(t.transcriptPath, 'utf8'), /stripe webhooks/);
+  assert.ok(r.redacted >= 1);
+  const io3 = quiet();
+  await main(['remember', '--home', home, '--key', 'acme/app', '--project', 'Sandbox'], io3, {});
+  const io4 = quiet();
+  await main(['prepare', '--source', 'conductor', '--home', home, '--threads', 'w1', '--consent', '--json'], io4, {});
+  assert.equal(JSON.parse(io4.out[0]).threads[0].rememberedProject, 'Sandbox');
+});
+
+test('CLI plan and import: a repository without a project is asked once, then remembered', { skip }, async () => {
+  const home = fakeHome({ t3: false });
+  const wt = worktree(home);
+  const db = path.join(home, 'Library', 'Application Support', 'com.conductor.app', 'conductor.db');
+  sh(path.dirname(db), 'sqlite3', db, `UPDATE workspaces SET workspace_path='${wt}' WHERE id='w1';`);
+  const SANDBOX = { id: 'project_sandbox', name: 'Sandbox', code: 'SAND', repos: [{ repoFullName: 'Acme/Other', baseBranch: 'main', mode: 'primary' }] };
+  const io = quiet();
+  await main(['plan', '--source', 'conductor', '--home', home, '--threads', 'w1', '--json'], io, { api: client('K', { fetchImpl: fakeFetch([HOME_P, SANDBOX]).f }) });
+  const plan = JSON.parse(io.out[0]);
+  assert.equal(plan.threads[0].capyProject, null);
+  assert.deepEqual(plan.missing, [{ repo: 'acme/app', threads: ['Billing page'] }]);
+  assert.deepEqual(plan.capyProjects, ['Home', 'Sandbox']);
+  const { f, calls } = fakeFetch([HOME_P, SANDBOX]);
+  const io2 = quiet();
+  assert.equal(await main(['import', '--source', 'conductor', '--home', home, '--threads', 'w1', '--consent', '--device', 'device_A', '--project', 'Sandbox', '--remember'], io2, { api: client('K', { fetchImpl: f }) }), 0);
+  assert.equal(calls.find((c) => c.url.endsWith('/threads')).body.projectId, 'project_sandbox');
+  assert.match(io2.out[0], /"Billing page" → Sandbox, on this computer/);
+  assert.deepEqual(loadChoices(home), { 'acme/app': 'project_sandbox' });
+  const io3 = quiet();
+  await main(['plan', '--source', 'conductor', '--home', home, '--threads', 'w1', '--json'], io3, { api: client('K', { fetchImpl: fakeFetch([HOME_P, SANDBOX]).f }) });
+  assert.equal(JSON.parse(io3.out[0]).threads[0].capyProject, 'Sandbox', 'remembered: no second question');
+  assert.deepEqual(JSON.parse(io3.out[0]).missing, []);
 });

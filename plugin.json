@@ -1,8 +1,8 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "import-to-capy",
-  "version": "0.3.0",
-  "description": "Import Conductor workspaces and T3 Code threads into Capy as real threads with their full history, in the right project. Say $import. Read-only on the source app.",
+  "version": "0.4.0",
+  "description": "Import Conductor workspaces and T3 Code threads into Capy by saying \"import from conductor\" or \"import from t3 code\": each becomes a Capy thread in the right project, with its title, on your Mac in the same folder and branch, conversation attached. Read-only on the source app.",
   "author": {
     "name": "Meghavi"
   },
@@ -16,7 +16,14 @@
   ],
   "extensions": {
     "ai.capy": {
-      "displayName": "Import to Capy"
+      "displayName": "Import to Capy",
+      "recipes": {
+        "import-to-capy": {
+          "connection": "organization"
+        }
+      }
     }
-  }
+  },
+  "homepage": "https://github.com/HulkInTherapy/import-to-capy",
+  "repository": "https://github.com/HulkInTherapy/import-to-capy"
 }

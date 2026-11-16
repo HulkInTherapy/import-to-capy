@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { validate, check, ROOT } from './validate.mjs';
+import { OUTPUTS } from '../playbook/render.mjs';
 
 test('this folder is a valid Capy plugin', () => {
   const r = validate();
@@ -44,12 +45,22 @@ test('skills/import carries an identical copy of lib/ (run npm run sync after ed
   for (const f of fs.readdirSync(path.join(ROOT, 'skills', 'import', 'scripts'))) assert.ok(fs.existsSync(path.join(lib, f)), `stale script ${f}`);
 });
 
-test('skill-only plugin: no MCP server (a local server never reaches Mac threads and shows "Not checked")', () => {
+test('remote server: listed in mcp.json with a no-sign-in recipe, so it reaches threads on the user\'s own computer', () => {
   const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, 'mcp.json'), 'utf8'));
-  assert.deepEqual(mcp.mcpServers, {});
+  const plugin = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin.json'), 'utf8'));
+  assert.deepEqual(Object.keys(mcp.mcpServers), ['import-to-capy']);
+  const srv = mcp.mcpServers['import-to-capy'];
+  assert.equal(srv.type, 'streamable-http', 'a remote server; stdio servers never reach threads on the user\'s computer');
+  assert.match(srv.url, /^https:\/\/[a-z0-9-]+\.vercel\.app\/mcp$/);
+  assert.equal(srv.headers, undefined, 'no credentials');
+  const recipe = plugin.extensions['ai.capy'].recipes['import-to-capy'];
+  assert.deepEqual(recipe, { connection: 'organization' }, 'no auth and no secrets: Capy connects it with no sign-in');
   const schema = JSON.parse(fs.readFileSync(path.join(ROOT, 'tests', 'schemas', 'mcp.schema.json'), 'utf8'));
   assert.deepEqual(check(schema, mcp), []);
-  assert.ok(!fs.existsSync(path.join(ROOT, 'lib', 'mcp-server.mjs')));
+});
+
+test('every playbook copy is built from playbook/PLAYBOOK.md (run npm run sync after editing it)', () => {
+  for (const [rel, build] of Object.entries(OUTPUTS)) assert.equal(fs.readFileSync(path.join(ROOT, rel), 'utf8'), build(), `${rel} drifted`);
 });
 
 const skillText = (n) => fs.readFileSync(path.join(ROOT, 'skills', n, 'SKILL.md'), 'utf8');
@@ -72,6 +83,7 @@ test('skills ask with question cards and rule out the detours from the first tes
     assert.match(s, /never ask for computer use|no computer use/i);
     assert.match(s, /npx -y -p github:HulkInTherapy\/import-to-capy/, `${n} works without bundled scripts`);
   }
-  assert.match(skillText('import'), /Never look for MCP tools/);
+  assert.match(skillText('import'), /Never look for more MCP tools/);
+  for (const n of ['import', 'import-from-conductor', 'import-from-t3code']) assert.match(skillText(n), /\$run prepare --source X[\s\S]*tools\.thread\.create/, `${n} creates the threads with Capy's own tool`);
   assert.match(skillText('import'), /never send the user to Settings/);
 });
