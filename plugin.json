@@ -1,11 +1,19 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "import-to-capy",
-  "version": "0.2.0",
-  "description": "Bring your work from Conductor or T3 Code into Capy: projects and setup scripts, plus the threads you pick, each with a redacted handoff of its chat. Read-only on the source app.",
-  "author": { "name": "Meghavi" },
+  "version": "0.3.0",
+  "description": "Import Conductor workspaces and T3 Code threads into Capy as real threads with their full history, in the right project. Say $import. Read-only on the source app.",
+  "author": {
+    "name": "Meghavi"
+  },
   "license": "MIT",
-  "keywords": ["import", "conductor", "t3code", "migration", "threads"],
+  "keywords": [
+    "import",
+    "conductor",
+    "t3code",
+    "migration",
+    "threads"
+  ],
   "extensions": {
     "ai.capy": {
       "displayName": "Import to Capy"

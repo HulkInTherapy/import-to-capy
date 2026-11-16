@@ -1,14 +1,13 @@
 {
   "name": "import-to-capy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
-  "description": "Capy plugin and CLI: bring Conductor or T3 Code projects, setup and threads into Capy. Read-only on the source.",
+  "description": "Capy plugin, skill and CLI: bring Conductor workspaces and T3 Code threads into Capy as real threads with their history. Read-only on the source.",
   "type": "module",
   "bin": {
     "import-to-capy": "lib/import-to-capy.mjs",
     "conductor-to-capy": "lib/conductor-to-capy.mjs",
-    "conductor-workspaces": "lib/conductor-workspaces.mjs",
-    "import-to-capy-mcp": "lib/mcp-server.mjs"
+    "conductor-workspaces": "lib/conductor-workspaces.mjs"
   },
   "engines": {
     "node": ">=18"

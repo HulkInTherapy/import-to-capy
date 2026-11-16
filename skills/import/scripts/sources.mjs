@@ -29,6 +29,8 @@ export function immutableQuery(dbPath) {
 }
 const lit = (v) => `'${String(v).replace(/'/g, "''")}'`;
 const parse = (s, d = null) => { try { return s ? JSON.parse(s) : d; } catch { return d; } };
+// T3 Code stores subagent runs and provider-internal runs as threads too; they belong to a parent thread.
+export const isT3ChildThread = (id) => /^thread:(subagent|provider):/.test(String(id || ''));
 const DEFAULT_BRANCHES = new Set(['main', 'master', 'trunk', 'develop', 'canary']);
 
 export function detect({ home = os.homedir(), cwd = process.cwd() } = {}) {
@@ -51,14 +53,18 @@ export function t3Catalog({ db = t3DefaultDb(), home = os.homedir(), native = tr
       json_extract(payload_json, '$.branchPullRequest') AS branch_pr, json_extract(payload_json, '$.linkedPullRequest') AS linked_pr
     FROM orchestration_v2_projection_threads WHERE deleted_at IS NULL;`);
   const counts = new Map(q('SELECT thread_id, COUNT(*) AS n FROM orchestration_v2_projection_messages GROUP BY thread_id;').map((r) => [r.thread_id, r.n]));
-  const prov = new Map();
+  const prov = new Map(); const nativeIds = new Map();
   for (const r of q(`SELECT thread_id, provider, json_extract(payload_json, '$.nativeThreadRef.nativeId') AS native_id, updated_at
-      FROM orchestration_v2_projection_provider_threads ORDER BY updated_at;`)) prov.set(r.thread_id, r);
+      FROM orchestration_v2_projection_provider_threads ORDER BY updated_at;`)) {
+    prov.set(r.thread_id, r);
+    if (r.native_id) nativeIds.set(r.thread_id, [...(nativeIds.get(r.thread_id) || []), r.native_id]);
+  }
   const cat = { source: 'T3 Code', projects: projects.map((p) => ({ id: p.project_id, name: p.title || path.basename(p.workspace_root || '') || p.project_id,
     path: p.workspace_root || '', lastUsed: p.updated_at, scripts: parse(p.scripts_json, []), archived: !!p.archived_at, threads: [] })) };
   const byId = new Map(cat.projects.map((p) => [p.id, p]));
   for (const t of threads) {
     const p = byId.get(t.project_id); if (!p) continue;
+    if (isT3ChildThread(t.thread_id)) continue; // subagent runs and provider-internal threads, not threads the user sees
     const prs = [...(parse(t.prs, []) || []), parse(t.branch_pr), parse(t.linked_pr)].filter(Boolean)
       .map((x) => ({ url: x.url || '', number: x.number, state: (x.snapshot?.state || x.state || '').toLowerCase(), title: x.snapshot?.title || '' }));
     const merged = prs.some((x) => x.state === 'merged' || x.state === 'closed');
@@ -68,7 +74,8 @@ export function t3Catalog({ db = t3DefaultDb(), home = os.homedir(), native = tr
       worktree: t.worktree || '', prs, archived: !!t.archived_at,
       unfinished: !t.settled_at && !t.archived_at, openWork: !t.archived_at && (prs.some((x) => x.state === 'open') || (!!branch && !merged)),
       messageCount: counts.get(t.thread_id) || 0, provider: pv?.provider || t.default_provider || '',
-      native: native && pv?.native_id ? findNative(pv.provider, pv.native_id, home) : null, nativeId: pv?.native_id || '' });
+      native: native && pv?.native_id ? findNative(pv.provider, pv.native_id, home) : null, nativeId: pv?.native_id || '',
+      nativeIds: nativeIds.get(t.thread_id) || [], path: t.worktree || p.path || '' });
   }
   return sortCatalog(cat);
 }
@@ -125,12 +132,13 @@ export function conductorCatalog({ home = os.homedir(), db = conductorDefaultDb(
       const tsOf = (x) => Date.parse(String(x).replace(' ', 'T') + (String(x).includes('T') ? '' : 'Z')) || 0;
       const last = [w.last_activity_at, ss[0]?.last_message_at].filter(Boolean).sort((a, b) => tsOf(b) - tsOf(a))[0] || w.updated_at || ss[0]?.updated_at;
       const nativeId = ss[0]?.claude_session_id || '';
+      const nativeIds = [...new Set(ss.map((s) => s.claude_session_id).filter(Boolean))];
       p.threads.push({ id: w.local_id || w.id, title: w.pr_title || w.workspace_name || w.directory_name || w.branch || 'Untitled', createdAt: w.created_at, updatedAt: last,
         branch: w.branch && !DEFAULT_BRANCHES.has(w.branch) ? w.branch : '', workspaceName: w.workspace_name || w.directory_name || '', path: w.workspace_path || '',
         prs: w.pr_title ? [{ title: w.pr_title, state: '' }] : [], notes: w.notes || '', archived,
         unfinished: !archived && !/\b(done|merged|closed|complete)/.test(status), openWork: !archived && !!w.branch && !DEFAULT_BRANCHES.has(w.branch),
         messageCount: ss.reduce((n, s) => n + (counts.get(s.id) || 0), 0), sessionIds: ss.map((s) => s.id), provider: ss[0]?.agent_type || ss[0]?.model || '',
-        native: native && nativeId ? findNative('claude', nativeId, home) : null, nativeId });
+        native: native && nativeId ? findNative('claude', nativeId, home) : null, nativeId, nativeIds, worktree: w.workspace_path || '' });
     }
     return sortCatalog(cat);
   });

@@ -86,6 +86,32 @@ export function fakeHome({ t3 = true, conductor = true, claudeSession = true } =
   const home = tmpdir('c2c-home-');
   if (t3) fakeT3(home);
   if (conductor) fakeConductor(home);
-  if (claudeSession) { const d = path.join(home, '.claude', 'projects', '-src-api'); fs.mkdirSync(d, { recursive: true }); fs.writeFileSync(path.join(d, 'aaaaaaaa-1111-2222-3333-444444444444.jsonl'), '{}\n'); }
+  if (claudeSession) writeClaudeSession(home, { id: 'aaaaaaaa-1111-2222-3333-444444444444', cwd: '/src/api', branch: 'me/login', prompt: 'Login fails for SSO users', at: '2026-11-15T11:00:00.000Z' });
   return home;
+}
+
+// A Claude Code session file shaped like the real ones (first line has no uuid; the chain starts on line 2).
+export function writeClaudeSession(home, { id, cwd, branch = 'main', prompt = 'Do the thing', at = '2026-11-15T11:00:00.000Z', title, extra = [] }) {
+  const d = path.join(home, '.claude', 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
+  fs.mkdirSync(d, { recursive: true });
+  const lines = [{ type: 'queue-operation', sessionId: id },
+    { type: 'user', uuid: 'u1', parentUuid: null, sessionId: id, cwd, gitBranch: branch, version: '2.1.0', timestamp: at, message: { role: 'user', content: prompt } },
+    ...(title ? [{ type: 'custom-title', customTitle: title, sessionId: id }] : []),
+    { type: 'assistant', uuid: 'a1', parentUuid: 'u1', sessionId: id, cwd, timestamp: at, message: { role: 'assistant', content: [{ type: 'text', text: 'On it.' }] } },
+    ...extra];
+  const f = path.join(d, `${id}.jsonl`);
+  fs.writeFileSync(f, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  return f;
+}
+
+// A Codex rollout shaped like the real ones.
+export function writeCodexSession(home, { id, cwd, branch = 'main', prompt = 'Do the thing', at = '2026-11-15T11:00:00.000Z', source = 'vscode', remote }) {
+  const d = path.join(home, '.codex', 'sessions', '2026', '11', '15');
+  fs.mkdirSync(d, { recursive: true });
+  const lines = [{ type: 'session_meta', timestamp: at, payload: { id, cwd, timestamp: at, source, originator: 'T3 Code', cli_version: '0.60.0', git: { branch, ...(remote ? { repository_url: remote } : {}) } } },
+    { type: 'response_item', timestamp: at, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '<environment_context>x</environment_context>' }] } },
+    { type: 'response_item', timestamp: at, payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: prompt }] } }];
+  const f = path.join(d, `rollout-2026-11-15T11-00-00-${id}.jsonl`);
+  fs.writeFileSync(f, lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+  return f;
 }

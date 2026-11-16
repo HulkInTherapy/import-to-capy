@@ -1,52 +1,60 @@
 ---
 name: import
-description: Bring work from Conductor or T3 Code into Capy (projects, setup scripts, threads and, with consent, chat history as handoffs). Use when the user says "import", "import my threads", "bring my work over", "move from Conductor", "move from T3 Code", or asks to continue a chat from another agent app. Finds which source is on this computer, asks "Conductor or T3 Code?" only if both are, then runs one short flow - scan, pick (native form, local picker page, or a numbered menu), one-screen preview, one confirmation, import, one-screen summary with links. Read-only on the source; secrets are redacted.
+description: Use when the user wants to import, move, migrate, bring over or continue work from Conductor or T3 Code in Capy - "import", "import from conductor", "import from t3 code", "import my t3 threads", "move my conductor workspaces to capy", "bring my threads over", "continue my conductor chat here", "switch from T3 Code". Brings the picked Conductor workspaces and T3 Code threads into the right Capy project as real threads with their whole conversation, through Capy's own Claude Code / Codex session import; an API fallback and handoff summaries cover the rest. Asks with multiple-choice question cards (source, project, which threads, confirm). Complete on its own - it needs no MCP tools, no plugin tools, no computer use, no catalog search and no settings changes. Run it in a thread on the user's own computer (This Mac), where the data lives. Read-only on Conductor and T3 Code; secrets are redacted.
 ---
 
-# Import into Capy
+# Import from Conductor or T3 Code
 
-You bring the user's own work from **Conductor** or **T3 Code** into Capy. Nothing in the source app is changed. Keep it calm and short: **one question at a time**, never a data dump.
+You bring the user's Conductor workspaces or T3 Code threads into Capy as **real threads with their full conversation, in the right project**. Feel native: ask with question cards, one at a time, and keep every message short.
 
-## Scripts
+## Never
 
-`scripts/` next to this file holds zero-dependency Node scripts (Node 18+, `sqlite3` CLI). The main one:
+- Never look for MCP tools, plugin tools, integrations or the catalog (`mcp_find`, Explore). This skill is complete with its script.
+- Never ask for computer use or desktop controls, and never send the user to Settings to refresh, enable or fix anything. The only settings page you may point to is **Import**, in the last step.
+- Never read chat text without a yes, never print chat text, never write a key or secret to a file or the chat.
+- Never use the Home project unless the user picks it.
 
+## The script
+
+```bash
+S="<this skill's folder>/scripts/import-to-capy.mjs"     # Node 18+ and sqlite3, both on every Mac
+[ -f "$S" ] && run="node $S" || run="npx -y -p github:HulkInTherapy/import-to-capy import-to-capy"
+$run detect --json
 ```
-node scripts/import-to-capy.mjs detect
-node scripts/import-to-capy.mjs scan    --source conductor|t3code
-node scripts/import-to-capy.mjs pick    --source ...                 # local picker page; prints the selection as JSON
-node scripts/import-to-capy.mjs select  --source ... "<user's words>"   # prints the preview
-node scripts/import-to-capy.mjs export  --source ... --threads id,id --consent [--transcripts]
-node scripts/import-to-capy.mjs setup   --source t3code --project <name>
+
+If `detect` finds nothing, you are not on the user's computer: say "Your Conductor and T3 Code data is on your Mac. Start a new thread on **This Mac** and type `$import`." and stop.
+
+## Ask (question cards, one per turn)
+
+Use your built-in multiple-choice question tool (`clarify_questions`, the card that says "Waiting on you to choose"). One question per card, the options exactly as the script gives them, the recommended one first. Don't ask what the user already said ("import from conductor" means the source is answered).
+
+1. **Source**, only if `detect` found both: "Import from which app?" → `Conductor`, `T3 Code`.
+2. **Project**: run `$run questions --source <conductor|t3code>` and ask its `project.question` with its `project.options` (the most recent projects with thread counts and last-used dates, then "All projects"). Map the answer to `project.values`.
+3. **Threads**: ask `threads.question` with `threads.options`: Latest 3 threads (recommended), Last 7 days, Last used project, Everything, Let me pick threads. For "Let me pick", run `$run questions --source X --project <name>` and ask its `pick` card (multiple choice; values are thread ids).
+4. **Confirm**: `$run select --source X "<phrase>" --json` where the phrase is `project <name> latest 3 threads`, `project <name> last 7 days`, `last used`, `everything`, or `<name> everything` ("All projects" drops the `project` part). Show its `preview` (one screen), then ask: "Bring these N threads into Capy with their full history?" → `Yes, import them`, `Change the selection`.
+
+## Import: best path first
+
+**1. Capy's own import (real threads, full history).** Conductor and T3 Code run Claude Code and Codex, so each workspace or thread has a session file Capy's desktop app can import, into the project for its repository.
+
+```bash
+$run native --source X --threads <ids from select> --open
 ```
 
-For Conductor setup files there is also `scripts/conductor-to-capy.mjs` (see the `import-from-conductor` skill).
+It opens Capy's Import page (`capy://app/settings/import`) and prints the exact clicks: which app (Claude Code / Codex), which repository group, which sessions to tick (title and date as Capy shows them, with the workspace or thread they belong to), and which project each goes to. If it says to create a project first, that comes first. Give the user those steps as they are, then ask with a card: "Done importing?" → `Done`, `Something looks wrong`. This is the only clicking the user does.
 
-## Where to run
+**2. API fallback, only for threads `native` lists under "No session file".** Ask one card: "N threads have no session file. Bring them as new threads with the full transcript attached (needs a Capy API key), or as short summaries?" → `With full transcript`, `Summaries only`, `Skip them`.
+- With full transcript: `$run continue --source X --threads <those ids> --consent`. It finds the Capy project for the workspace's GitHub repository, starts the thread on this computer in the original worktree, posts a redacted handoff, and attaches the redacted transcript. If it prints how to save a key (Keychain), relay those two lines and wait; never ask the user to paste a key into the chat. If it says no project uses the repository, relay its one-line click path and stop.
+- Summaries only (last resort, say it is a summary, not the conversation): `$run export --source X --threads <ids> --consent` and give each "Start a summary thread" link.
 
-The data lives on the user's Mac: Conductor in `~/Library/Application Support/com.conductor.app/`, T3 Code in `~/.t3/userdata/`. If `detect` finds nothing, you are probably on a cloud machine: say "Your Conductor / T3 Code data is on your Mac. Start this from a thread on your Mac (Capy desktop app → Run on → This Mac) and say import again." Then stop.
+**3. Setup scripts (optional, once per project):** offer it after the threads are in. Conductor: `node <folder>/scripts/conductor-to-capy.mjs <repo> --from-app` prints a `.capy/setup.json`; T3 Code: `$run setup --source t3code --project <name>`. Commit it on a branch and open a PR only after a yes.
 
-## The flow
+## Finish
 
-1. **Detect.** `detect`. If both sources exist and the user didn't say which, ask exactly: **"Import from Conductor or T3 Code?"** Then hand over to `import-from-conductor` or `import-from-t3code` (same flow, source-specific details).
-2. **Scan.** `scan --source X`. Don't show it yet.
-3. **Pick, best UI first, and say which one you used:**
-   1. If the `import-to-capy` MCP tools are available, call `choose_import`. It tries the client's native form (MCP elicitation), then a local picker page. Its result has `method`: `elicitation`, `picker` or `menu`.
-   2. Otherwise, on the user's Mac, run `scan` then `pick --source X`. It opens a one-time page on 127.0.0.1 (cards, quick chips like "Latest 3", "Last 7 days", "Unfinished", checkboxes, one Import button) and prints the selection when they press Import. Tell the user: "I opened a picker in your browser." If it can't open or times out, use the menu.
-   3. **Menu:** show the numbered list from `scan` and ask one question: *"Which ones? Say a number or name, everything, latest 3 threads, last 7 days, last used, only unfinished, or with open PRs. Or just say go for your most recent project's latest 3 threads."* Pass their exact words to `select`. If it returns a question, ask that question.
-4. **Chats, once.** If the selection includes threads, ask once: **"Bring the chat history too? I'll write a short handoff per thread (goal, decisions, files, TODOs, last state, last few messages), with secrets redacted. Nothing is committed to main."** (Skip if the picker or form already answered `includeChats`.)
-5. **Preview, then one confirmation.** Show `select`'s preview (one screen), plus for each project whether it has setup to convert. Ask: **"Import this?"**
-6. **Do it.**
-   - Setup: Conductor → `import-from-conductor` steps (`.capy/setup.json` on a branch, PR). T3 Code → `setup --source t3code --project <name>`; if not empty, offer the same branch + PR (or apply it with your environment tools if you are Capy and the user prefers).
-   - Threads: `export --source X --threads <ids> --consent` (add `--transcripts` only if they asked for full transcripts). Handoffs land in `.capy-import/<time>/`, which git ignores.
-   - **Native history first:** where a thread shows "native Claude Code / Codex session available", tell the user Capy's desktop app can import Claude Code and Codex histories as threads; our handoff is the fallback.
-   - Create the Capy work: for each thread give its `capyLink` (opens a new thread with a short continue-prompt). If you are Capy and the user prefers, create one Capy issue per thread with the handoff as its body, or start the threads yourself. Never paste whole transcripts into chat.
-   - Full transcripts, if wanted: commit them only on a separate branch (e.g. `capy/import-history`), never on main unless the user says so.
-7. **Summary, one screen.** Projects and setup status, threads with their links, how many secrets were redacted, what could not be imported, and the few clicks left (merge the setup PR, re-enter environment variable values with Capy's "Import .env", connect a subscription).
+One short message: what landed where (project, thread titles), how many secrets were redacted, anything that could not come over and why. Conductor and T3 Code are untouched and keep working.
 
-## Rules
+## Details
 
-- **Read-only on the source.** Never write to, lock or copy T3 Code's database (`statev2.sqlite`, often gigabytes): the scripts open it with `immutable=1`. Conductor's small database is read through a temporary copy that is deleted. Never touch `~/conductor`, `~/.conductor`, `~/.t3`, `~/.capy` or app data folders.
-- **Secrets:** never read or print environment values; everything written is redacted; report the count.
-- **One question at a time.** Defaults need no thinking: "go" = most recent project, latest 3 threads.
-- **Don't invent Capy features.** If something can't be imported, say so.
+- Selection words the script understands: everything, latest N threads, last N days, today, last used, only unfinished, with open branches/PRs, including archived, numbers, names, ranges.
+- Reads: Conductor `~/Library/Application Support/com.conductor.app/conductor.db` through a temporary copy; T3 Code `~/.t3/userdata/statev2.sqlite` opened `immutable=1`, never copied (it can be gigabytes), so the last minutes may be missing; session files in `~/.claude/projects` and `~/.codex/sessions` (headers only).
+- T3 Code subagent runs belong to their parent thread and come along with it.
